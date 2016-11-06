@@ -60,6 +60,7 @@
 #include "bbcp_Emsg.h"
 #include "bbcp_Headers.h"
 #include "bbcp_NetLogger.h"
+#include "bbcp_NetAddr.h"
 #include "bbcp_Network.h"
 #include "bbcp_Platform.h"
 #include "bbcp_Stream.h"
@@ -232,7 +233,7 @@ bbcp_Config::~bbcp_Config()
 #define Cat_Oct(x) {            cbp=n2a(x,&cbp[0],"%o");}
 #define Add_Str(x) {cbp[0]=' '; strcpy(&cbp[1], x); cbp+=strlen(x)+1;}
 
-#define bbcp_VALIDOPTS (char *)"-a.AB:b:C:c.d:DeE:fFghi:I:kKl:L:m:nN:oOpP:q:rR.s:S:t:T:u:U:vVw:W:x:y:zZ:4.~@:$#"
+#define bbcp_VALIDOPTS (char *)"-a.AB:b:C:c.d:DeE:fFghi:I:kKl:L:m:nN:oOpP:q:rR.s:S:t:T:u:U:vVw:W:x:y:zZ:4.~@:$#+"
 #define bbcp_SSOPTIONS bbcp_VALIDOPTS "MH:Y:"
 
 #define Hmsg1(a)   {bbcp_Fmsg("Config", a);    help(1);}
@@ -247,6 +248,7 @@ void bbcp_Config::Arguments(int argc, char **argv, int cfgfd)
    int mspec = 0, isProg = 0;
    char *Slash, *inFN=0, c, cbhname[MAXHOSTNAMELEN+1];
    bbcp_Args arglist((char *)"bbcp: ");
+   bool warnIPV = false;
 
 // Make sure we have at least one argument
 //
@@ -263,7 +265,7 @@ void bbcp_Config::Arguments(int argc, char **argv, int cfgfd)
 
 // Process the options
 //
-   while (c=arglist.getopt())
+   while ((c=arglist.getopt()))
      { switch(c)
        {
        case 'a': Options |= bbcp_APPEND | bbcp_ORDER;
@@ -435,6 +437,8 @@ void bbcp_Config::Arguments(int argc, char **argv, int cfgfd)
        case '#': cout <<bbcp_Version.VData <<endl;
                  exit(0);
                  break;
+       case '+': Options |= (bbcp_RDONLY|bbcp_RXONLY);;
+                 break;
        case '-': break;
        default:  if (!notctl)
                     {if (cfgfd < 0) help(255);
@@ -450,6 +454,10 @@ void bbcp_Config::Arguments(int argc, char **argv, int cfgfd)
 // Set the correct ip stack to use (do this before any resolution)
 //
    if (Options & bbcp_IPV4) bbcp_Net.IPV4();
+      else if (bbcp_NetAddr::IPV4Set())
+              {Options |= bbcp_IPV4;
+               if (Options & bbcp_BLAB) warnIPV = true;
+              }
 
 // If we should use the DNS then get our real hostname
 //
@@ -457,6 +465,10 @@ void bbcp_Config::Arguments(int argc, char **argv, int cfgfd)
    if (Options & bbcp_NODNS) MyHost = MyAddr;
       else MyHost = bbcp_Net.FullHostName((char *)0);
    bbcp_HostName = MyHost;
+
+// Correct recursive readable selection option
+//
+   if (Options & bbcp_GROSS) Options &= ~bbcp_RXONLY;
 
 // If there is a checksum specification, process it now
 //
@@ -647,6 +659,11 @@ void bbcp_Config::Arguments(int argc, char **argv, int cfgfd)
                      + (Progint && (Options & bbcp_SNK) ? 1 : 0) + 2;
    DEBUG("Optimum MT level is " <<MTLevel);
 
+// Finally check if we should warn that we downgraded to IPv4
+//
+   if (warnIPV) bbcp_Fmsg("Config", bbcp_HostName,
+                          "encountered an IPv6 fault; IPv4 forced.");
+
 // All done
 //
    return;
@@ -724,6 +741,7 @@ H("-y what perform fsync before closing the output file when what is 'd'.")
 H("        When what is 'dd' then the file and directory are fsynced.")
 H("-z      use reverse connection protocol (i.e., target to source).")
 H("-Z      use port range pn1:pn2 for accepting data transfer connections.")
+H("-+      for recursive copies only copy readable/searchable items.")
 H("-4      use only IPV4 stack; optionally, at specified location.")
 H("-~      preserve atime and mtime only.")
 H("-@      specifies how symbolic links are handled: copy recreates the symlink,")
@@ -765,16 +783,17 @@ int bbcp_Config::ConfigInit(int argc, char **argv)
 // Make sure we have at least one argument to determine who we are
 //
    if (argc >= 2)
-           if (!strcmp(argv[1], SrcArg))
+     {     if (!strcmp(argv[1], SrcArg))
             {Options |= bbcp_SRC; bbcp_Debug.Who = (char *)"SRC"; return 0;}
       else if (!strcmp(argv[1], SnkArg))
             {Options |= bbcp_SNK; bbcp_Debug.Who = (char *)"SNK"; return 0;}
       else MyProg = strdup(argv[0]);
+     }
 
 // Use the config file, if present
 //
-   if (ConfigFN = getenv("bbcp_CONFIGFN"))
-      {if (retc = Configure(ConfigFN)) return retc;}
+   if ((ConfigFN = getenv("bbcp_CONFIGFN")))
+      {if ((retc = Configure(ConfigFN))) return retc;}
       else {
       // Use configuration file in the home directory, if any
       //
@@ -784,7 +803,7 @@ int bbcp_Config::ConfigInit(int argc, char **argv)
       strcpy(ConfigFN, homedir); strcat(ConfigFN, cfn);
       if (stat(ConfigFN, &buf))
          {retc = 0; free(ConfigFN); ConfigFN = 0;}
-         else if (retc = Configure(ConfigFN)) return retc;
+         else if ((retc = Configure(ConfigFN))) return retc;
      }
 
 // Establish the FD limit
@@ -990,6 +1009,7 @@ void bbcp_Config::Config_Ctl(int rwbsz)
                                  if (Options & bbcp_SLKEEP) {Add_Str("keep");}
                                     else      {Add_Str("follow");}
                                 }
+   if (Options & (bbcp_RXONLY|bbcp_RDONLY))    Add_Opt('+');
    CopyOpts = strdup(cbuff);
 }
   
@@ -1359,7 +1379,7 @@ int bbcp_Config::HostAndPort(const char *what, char *path, char *buff, int bsz)
     if (*hn == ':' && hn++ && *hn)
        {errno = 0;
         pnum = strtol(hn, (char **)NULL, 10);
-        if (!pnum && errno || pnum > 65535)
+        if ((!pnum && errno) || pnum > 65535)
            {bbcp_Fmsg("Config",what,"port invalid -", hn); return -1;}
        }
 
@@ -1502,8 +1522,9 @@ void bbcp_Config::setOpts(bbcp_Args &Args)
      Args.Option("progress",   4, 'P', ':');
      Args.Option("ptime",      2, '~', 0);
      Args.Option("qos",        3, 'q', ':');
-     Args.Option("recursive",  1, 'r', 0);
+     Args.Option("readable",   4, '+', 0);
      Args.Option("realtime",   4, 'R', ':');
+     Args.Option("recursive",  1, 'r', 0);
      Args.Option("streams",    1, 's', ':');
      Args.Option("symlinks",   7, '@', ':'); // synonym for --links
 // S
@@ -1652,8 +1673,9 @@ int bbcp_Config::Unpipe(char *opts)
 void bbcp_Config::Cleanup(int rc, char *cfgfn, int cfgfd)
 {
 if (cfgfd >= 0 && cfgfn)
-   if (rc > 1)
+  {if (rc > 1)
         bbcp_Fmsg("Config","Check config file",cfgfn,"for conflicts.");
    else bbcp_Fmsg("Config", "Error occured processing config file", cfgfn);
+  }
 exit(rc);
 }

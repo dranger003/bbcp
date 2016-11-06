@@ -56,7 +56,7 @@ char *operator%(char *optarg)
          bbcp_Opt *p = this;
          do if (i <= p->Optmaxl && i >= p->Optminl &&
                !strncmp(p->Optword, optarg, i)) return p->Optvalu;
-            while(p = p->Optnext);
+            while((p = p->Optnext));
          return 0;
         }
 
@@ -193,15 +193,17 @@ char bbcp_Args::getopt()
 // If we have a valid argument, then we are all done
 //
    if (argval)
-      if (!*argval) argval = 0;
-         else if (*argval != '-') return *optspec;
+     {if (!*argval) argval = 0;
+         else {if (*argval != '-') return *optspec;}
+     }
 
 // If argument is optional, let it go
 //
    if (optspec[1] == '.')
       {if (argval && *argval == '-')
-          if (inStream) arg_stream.RetToken();
-             else Aloc--;
+          {if (inStream) arg_stream.RetToken();
+              else Aloc--;
+          }
        argval = 0;
        return *optspec;
       }

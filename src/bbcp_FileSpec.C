@@ -172,7 +172,7 @@ int bbcp_FileSpec::Compose(long long did, char *dpath, int dplen, char *fname)
 
 // Get the current state of the file or directory
 //
-        if (retc = FSp->Stat(targpath, &Targ)) targetsz = 0;
+        if ((retc = FSp->Stat(targpath, &Targ))) targetsz = 0;
    else if (Targ.Otype == 'p' && (bbcp_Config.Options & bbcp_XPIPE))
                                {targetsz =  0; return 0;}
    else if (Targ.Otype != 'f') {targetsz = -1; return 0;}
@@ -209,7 +209,7 @@ int bbcp_FileSpec::Create_Link()
 // in the directory. This will later be set to the true mode if it differs.
 //
    DEBUG("Make link " <<targpath <<" -> " <<Info.SLink);
-   if (retc = FSp->MKLnk(Info.SLink, targpath))
+   if ((retc = FSp->MKLnk(Info.SLink, targpath)))
       return bbcp_Emsg("Create_Link", retc, "creating link", targpath);
 
 // All done
@@ -230,9 +230,10 @@ int bbcp_FileSpec::Create_Path()
 // in the directory. This will later be set to the true mode if it differs.
 //
    DEBUG("Make path " <<Info.mode <<' ' <<targpath);
-   if (retc = FSp->MKDir(targpath, bbcp_Config.ModeDC))
-      if (retc == -EEXIST) return 0;
+   if ((retc = FSp->MKDir(targpath, bbcp_Config.ModeDC)))
+     {if (retc == -EEXIST) return 0;
          else return bbcp_Emsg("Create_Path", retc, "creating path", targpath);
+     }
 
 // All done
 //
@@ -366,8 +367,10 @@ bool bbcp_FileSpec::ExtendFileSpec(int &numF, int &numL, int slOpt)
    DIR           *dirp;
    char           relative_name[1024], absolute_name[4096];
    struct stat    sbuf;
+   int            accD = (bbcp_Config.Options & bbcp_RXONLY ? R_OK|X_OK : 0);
+   int            accF = (bbcp_Config.Options & bbcp_RDONLY ? R_OK : 0);
    int            dirFD;
-   bool           aOK = true;
+   bool           aOK = true, blab = (bbcp_Config.Options & bbcp_VERBOSE) != 0;
 
    // Open the directory as we will need a file descriptor to it. Different
    // operaing systems have different ways of doing this.
@@ -394,15 +397,32 @@ bool bbcp_FileSpec::ExtendFileSpec(int &numF, int &numL, int slOpt)
       //
       snprintf(absolute_name,sizeof(absolute_name),"%s/%s",pathname,d->d_name);
 
+      // Cleanup our local file info object if it hasn't been cleaned up
+      //
+      if (fInfo.SLink) {free(fInfo.SLink); fInfo.SLink = 0;}
+      if (fInfo.Group) {free(fInfo.Group); fInfo.Group = 0;}
+
       // Ignore entries we can't stat for any reason
       //
       if (0 != FSp->Stat(absolute_name,d->d_name,dirFD,slOpt,&fInfo)) continue;
 
       // Skip anything that isn't a file or a directory here
       //
-           if (fInfo.Otype == 'f') numF++;
-      else if (fInfo.Otype == 'l'){if (slOpt >= 0) continue; numL++;}
+           if (fInfo.Otype == 'f')
+              {if (accF && access(absolute_name, accF))
+                  {if (blab) SkipMsg(fInfo, absolute_name); continue;}
+               numF++;
+              }
+      else if (fInfo.Otype == 'l')
+              {if (slOpt >= 0) continue;
+               if (!slOpt && accF && access(absolute_name, accF))
+                  {if (blab) SkipMsg(fInfo, absolute_name); continue;}
+               numL++;
+              }
       else if (fInfo.Otype != 'd') continue;
+      else    {if (accD && access(absolute_name, accD))
+                  {if (blab) SkipMsg(fInfo, absolute_name); continue;}
+              }
 
       // If we are to monitor self-referential symlinks do so now
       //
@@ -601,6 +621,23 @@ void bbcp_FileSpec::setTrim()
 }
 
 /******************************************************************************/
+/*                               S k i p M s g                                */
+/******************************************************************************/
+  
+void bbcp_FileSpec::SkipMsg(bbcp_FileInfo &fInfo, const char *that)
+{
+   const char *what, *why = "unreadable";
+
+         if (fInfo.Otype == 'l' || fInfo.SLink)
+         {why = "unfollowable";  what = "symlink";}
+    else if (fInfo.Otype == 'f') what = "file";
+    else if (fInfo.Otype != 'd') what = "item";
+    else {why = "unsearchable";  what = "directory";}
+
+    bbcp_Fmsg("Source", "Skipping", why, what, that);
+}
+
+/******************************************************************************/
 /*                                  S t a t                                   */
 /******************************************************************************/
   
@@ -762,7 +799,7 @@ void bbcp_FileSpec::BuildPaths()
                         else bbcp_Config.srcPath = PS_New;
              PS_Prv = PS_New; PS_Cur = PS_New->next;
             }
-         if (*cp = delim) cp++;
+         if ((*cp = delim)) cp++;
         }
 }
 
